@@ -1,5 +1,7 @@
+from typing import Tuple
 from google.cloud import bigquery as bq
 from configparser import ConfigParser
+from json import loads
 
 
 def _get_client():
@@ -17,52 +19,58 @@ def _construct_project_dataset_id():
 
     return project.strip() + "." + dataset.strip(), base_path
 
-def create_schema(sch):
+def create_schema(sch : list) :
     """
     Method to convert table schema str to bigquery table schema format
-    Note : Supports only nesting only upto level 1
-
+    Invokes create_col_str_n_nested_schema for resolving nested columns
     """
-    schema: list = []
-    nested_schema: list = []
-    all_schema = sch.split(",")
-    for cols_info in all_schema:
-        col, dtype, mode = cols_info.split(":")
+    schema = []    
+    for cols in sch:
+        unested_fields , nested_fields = create_col_str_n_nested_schema(cols)    
+        unested_col , unested_dtype , unested_mode = unested_fields.split(',')
+        schema.append(bq.SchemaField(unested_col , unested_dtype , unested_mode,fields=nested_fields ))
+    return schema    
+    
+def create_col_str_n_nested_schema(nested_sch:dict) -> Tuple :
+    '''
+        Method converts nested_fields configured for in tables.ini into big query compatible schema
+        along with string of un-nested cols
+        Note: Currently big query supports nested level upto 15 levels
+    '''
+    col_str = ''
+    if isinstance(nested_sch,dict):
 
-        if dtype == "RECORD":
-            nested_fields = mode.split("->")
-            for nested_cols_info in nested_fields[1:]:
-                nested_col, nested_dtype, nested_mode = nested_cols_info.split("-")
-                nested_schema.append(
-                    bq.SchemaField(
-                        nested_col.strip(), nested_dtype, mode=nested_mode.strip()
-                    )
-                )
-            schema.append(
-                bq.SchemaField(
-                    col.strip(),
-                    dtype,
-                    mode=nested_fields[0].strip(),
-                    fields=nested_schema,
-                )
-            )
-        else:
-            schema.append(bq.SchemaField(col.strip(), dtype, mode=mode.strip()))
+        for key,value in nested_sch.items():        
+            nested_col=''
+            nested_sch = []
+            if key == 'Nested_Fields':
+                for nested_fields in value:
+                    nested_col , prev_curr_nested_schema = create_col_str_n_nested_schema(nested_fields)
+                    nested_coll , nested_dtype , nested_mode = nested_col.split(",")
+                    nested_sch.append(bq.SchemaField(nested_coll,nested_dtype,nested_mode,fields=prev_curr_nested_schema))                
+            else:
+                col_str = col_str + ',' + value           
+        return col_str.lstrip(','),nested_sch
+    else:
+        print("nested_sch is not a dict please pass it as dict")    
+    
 
-    return schema
-
-def create_bq_table(table_id, table_schema_str):
+def create_bq_table(table_id, table_schema_str : list):
     """
     Creates new bq table as per the schema defined in tables.ini
     """
-    table_ref = bq.Table(table_ref=table_id, schema=create_schema(table_schema_str))
-    table = client.create_table(table_ref)
-    table_info = {
-        "table_type": "new",
-        "table_creation": table.created,
-        "table_Schema": table.schema,
-    }
-    return table_info
+    if isinstance(table_schema_str,list):
+
+        table_ref = bq.Table(table_ref=table_id, schema=create_schema(table_schema_str))
+        table = client.create_table(table_ref)
+        table_info = {
+            "table_type": "new",
+            "table_creation": table.created,
+            "table_Schema": table.schema,
+        }
+        return table_info
+    else:
+        print("Pass correct schema type it should be a list")        
 
 def get_bq_table_details(client, table_id):
     table = client.get_table(table_id)
@@ -101,8 +109,7 @@ def get_table_schema_name(table_name):
     fully_qualified_table_id = project_datest + "." + table_name
     config_table = ConfigParser()
     config_table.read(table_config_path)
-    table_schema = config_table.get(table_name, "schema_string")
-
+    table_schema = loads(config_table.get(table_name, "schema_string"))
     return fully_qualified_table_id, table_schema
 
 def check_n_update_bq_table_schema(client, table_id, table_schema_str):
@@ -125,8 +132,9 @@ def check_n_update_bq_table_schema(client, table_id, table_schema_str):
 if __name__ == "__main__":
 
     client = _get_client()
-    table_name = "sdk_table"
+    table_name = "sdk_3_lvl_nested_table"
     table_id, table_schema_str = get_table_schema_name(table_name=table_name)
+    table_schema_str = table_schema_str["Fields"]
 
     try:
 
